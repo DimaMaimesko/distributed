@@ -1,0 +1,17 @@
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+
+# Go build artifacts
+/bin/
+*.exe
+*.test
+*.out
+coverage.*
+
+# Env
+.env
