@@ -10,6 +10,7 @@ const SubjectOrderCreated = "orders.created"
 
 type OrderCreated struct {
 	ID        string    `json:"id"`
+	UserID    string    `json:"user_id,omitempty"`
 	ProductID string    `json:"product_id"`
 	Quantity  int       `json:"quantity"`
 	CreatedAt time.Time `json:"created_at"`

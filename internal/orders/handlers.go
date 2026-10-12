@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"distributed/events"
+	"distributed/platform/auth"
 	"distributed/platform/concurrency"
 	"distributed/platform/middleware"
 )
@@ -29,6 +30,10 @@ func getOrderHandler(store Store) http.HandlerFunc {
 		}
 
 		order, err := store.GetByID(r.Context(), id)
+		if err == nil && !canRead(r, order) {
+			// 404, not 403: do not reveal that someone else's order exists.
+			err = ErrNotFound
+		}
 		if err != nil {
 			switch {
 			case errors.Is(err, ErrNotFound):
@@ -44,6 +49,14 @@ func getOrderHandler(store Store) http.HandlerFunc {
 	}
 }
 
+// RoleAdmin may read every order.
+const RoleAdmin = "admin"
+
+func canRead(r *http.Request, o Order) bool {
+	claims, ok := auth.ClaimsFromContext(r.Context())
+	return ok && (claims.UserID() == o.UserID || claims.Role == RoleAdmin)
+}
+
 type createOrderRequest struct {
 	ProductID string `json:"product_id"`
 	Quantity  int    `json:"quantity"`
@@ -51,6 +64,12 @@ type createOrderRequest struct {
 
 func createOrderHandler(store Store, pub publisher) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		claims, ok := auth.ClaimsFromContext(r.Context())
+		if !ok {
+			middleware.WriteError(w, http.StatusUnauthorized, "UNAUTHENTICATED", "not authenticated")
+			return
+		}
+
 		var req createOrderRequest
 		if err := middleware.DecodeJSON(w, r, &req); err != nil {
 			middleware.WriteDecodeError(w, err)
@@ -67,6 +86,7 @@ func createOrderHandler(store Store, pub publisher) http.HandlerFunc {
 
 		order := Order{
 			ID:        newOrderID(),
+			UserID:    claims.UserID(),
 			ProductID: req.ProductID,
 			Quantity:  req.Quantity,
 			Status:    "pending",
@@ -92,6 +112,7 @@ func createOrderHandler(store Store, pub publisher) http.HandlerFunc {
 func publishCreated(ctx context.Context, pub publisher, o Order) {
 	data, err := json.Marshal(events.OrderCreated{
 		ID:        o.ID,
+		UserID:    o.UserID,
 		ProductID: o.ProductID,
 		Quantity:  o.Quantity,
 		CreatedAt: o.CreatedAt,

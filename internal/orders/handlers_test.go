@@ -12,8 +12,60 @@ import (
 	"time"
 
 	"distributed/events"
+	"distributed/platform/auth"
 	"distributed/platform/middleware"
 )
+
+// Tokens for these tests come from a test-only key, as the auth service
+// would issue them.
+var testSigner, testValidator = func() (*auth.Signer, *auth.Validator) {
+	key, err := auth.GenerateKey()
+	if err != nil {
+		panic(err)
+	}
+	signer, err := auth.NewSigner(key, "test-issuer", []string{Audience}, time.Hour)
+	if err != nil {
+		panic(err)
+	}
+	keys, err := auth.NewStaticKeys(&key.PublicKey)
+	if err != nil {
+		panic(err)
+	}
+	return signer, auth.NewValidator(keys, "test-issuer", Audience)
+}()
+
+func tokenFor(t *testing.T, userID, role string, scopes ...string) string {
+	t.Helper()
+	if scopes == nil {
+		scopes = []string{"orders:read", "orders:write"}
+	}
+	tok, err := testSigner.Issue(auth.Identity{UserID: userID, Role: role, Scopes: scopes})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tok
+}
+
+// do sends a request with an optional bearer token.
+func do(t *testing.T, method, url, token, contentType, body string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(method, url, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, url, err)
+	}
+	t.Cleanup(func() { resp.Body.Close() })
+	return resp
+}
 
 type published struct {
 	subject string
@@ -38,31 +90,22 @@ func (p *fakePublisher) Publish(_ context.Context, subject string, data []byte) 
 
 func newTestServer(t *testing.T, store Store, pub publisher, ready ...middleware.Check) *httptest.Server {
 	t.Helper()
-	srv := httptest.NewServer(NewServer(Config{HTTPTimeout: time.Second}, store, pub, ready...).Handler)
+	srv := httptest.NewServer(NewServer(Config{HTTPTimeout: time.Second}, store, pub, testValidator, ready...).Handler)
 	t.Cleanup(srv.Close)
 	return srv
 }
 
 func postOrder(t *testing.T, srv *httptest.Server, contentType, body string) *http.Response {
 	t.Helper()
-	resp, err := http.Post(srv.URL+"/orders", contentType, strings.NewReader(body))
-	if err != nil {
-		t.Fatalf("POST /orders: %v", err)
-	}
-	t.Cleanup(func() { resp.Body.Close() })
-	return resp
+	return do(t, "POST", srv.URL+"/orders", tokenFor(t, "user-001", "customer"), contentType, body)
 }
 
 func TestGetOrderHandler(t *testing.T) {
 	store := NewMemoryStore()
-	store.Create(context.Background(), Order{ID: "order-001", ProductID: "prod-001", Quantity: 2, Status: "pending"})
+	store.Create(context.Background(), Order{ID: "order-001", UserID: "user-001", ProductID: "prod-001", Quantity: 2, Status: "pending"})
 	srv := newTestServer(t, store, &fakePublisher{})
 
-	resp, err := http.Get(srv.URL + "/orders/order-001")
-	if err != nil {
-		t.Fatalf("request: %v", err)
-	}
-	defer resp.Body.Close()
+	resp := do(t, "GET", srv.URL+"/orders/order-001", tokenFor(t, "user-001", "customer"), "", "")
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status: got %d, want 200", resp.StatusCode)
@@ -79,11 +122,7 @@ func TestGetOrderHandler(t *testing.T) {
 func TestGetOrderHandler_NotFound(t *testing.T) {
 	srv := newTestServer(t, NewMemoryStore(), &fakePublisher{})
 
-	resp, err := http.Get(srv.URL + "/orders/nonexistent")
-	if err != nil {
-		t.Fatalf("request: %v", err)
-	}
-	defer resp.Body.Close()
+	resp := do(t, "GET", srv.URL+"/orders/nonexistent", tokenFor(t, "user-001", "customer"), "", "")
 
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("status: got %d, want 404", resp.StatusCode)
@@ -120,7 +159,10 @@ func TestCreateOrder_StoresAndPublishes(t *testing.T) {
 	}
 	var ev events.OrderCreated
 	json.Unmarshal(pub.msgs[0].data, &ev)
-	if ev.ID != created.ID || ev.Quantity != 3 || ev.ProductID != "prod-001" {
+	if created.UserID != "user-001" {
+		t.Errorf("owner = %q, want the token's subject", created.UserID)
+	}
+	if ev.ID != created.ID || ev.UserID != "user-001" || ev.Quantity != 3 || ev.ProductID != "prod-001" {
 		t.Errorf("event = %+v, order = %+v", ev, created)
 	}
 }
@@ -184,5 +226,45 @@ func TestHealth(t *testing.T) {
 		if resp.StatusCode != want {
 			t.Errorf("%s: got %d, want %d", path, resp.StatusCode, want)
 		}
+	}
+}
+
+func TestOrders_Authorization(t *testing.T) {
+	store := NewMemoryStore()
+	store.Create(context.Background(), Order{ID: "order-001", UserID: "user-001"})
+	srv := newTestServer(t, store, &fakePublisher{})
+	orderURL := srv.URL + "/orders/order-001"
+	body := `{"product_id":"p","quantity":1}`
+
+	tests := []struct {
+		name       string
+		method     string
+		url        string
+		token      string
+		wantStatus int
+		wantCode   string
+	}{
+		{"get without token", "GET", orderURL, "", 401, "MISSING_TOKEN"},
+		{"create without token", "POST", srv.URL + "/orders", "", 401, "MISSING_TOKEN"},
+		{"get with bad token", "GET", orderURL, "nope", 401, "INVALID_TOKEN"},
+		{"get without read scope", "GET", orderURL, tokenFor(t, "user-001", "customer", "orders:write"), 403, "INSUFFICIENT_SCOPE"},
+		{"create without write scope", "POST", srv.URL + "/orders", tokenFor(t, "user-001", "customer", "orders:read"), 403, "INSUFFICIENT_SCOPE"},
+		{"someone else's order", "GET", orderURL, tokenFor(t, "user-002", "customer"), 404, "ORDER_NOT_FOUND"},
+		{"admin reads any order", "GET", orderURL, tokenFor(t, "admin-1", RoleAdmin), 200, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := do(t, tt.method, tt.url, tt.token, "application/json", body)
+			if resp.StatusCode != tt.wantStatus {
+				t.Fatalf("status = %d, want %d", resp.StatusCode, tt.wantStatus)
+			}
+			if tt.wantCode != "" {
+				var apiErr middleware.APIError
+				json.NewDecoder(resp.Body).Decode(&apiErr)
+				if apiErr.Code != tt.wantCode {
+					t.Errorf("code = %q, want %q", apiErr.Code, tt.wantCode)
+				}
+			}
+		})
 	}
 }

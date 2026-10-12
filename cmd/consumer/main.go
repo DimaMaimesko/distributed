@@ -69,6 +69,7 @@ func run(ctx context.Context, logger *slog.Logger, msgs <-chan messaging.Message
 
 			logger.Info("received order",
 				"order_id", event.ID,
+				"user_id", event.UserID,
 				"product_id", event.ProductID,
 				"quantity", event.Quantity,
 				"age_ms", time.Since(event.CreatedAt).Milliseconds(),

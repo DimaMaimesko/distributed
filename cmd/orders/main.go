@@ -2,7 +2,9 @@
 // event for every new order.
 //
 // Environment: PORT (default 8080), HTTP_TIMEOUT (default 10s),
-// ALLOWED_ORIGINS (comma-separated), NATS_URL.
+// ALLOWED_ORIGINS (comma-separated), NATS_URL,
+// AUTH_JWKS_URL (default http://localhost:8081/.well-known/jwks.json),
+// AUTH_ISSUER (default http://localhost:8081).
 package main
 
 import (
@@ -19,6 +21,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"distributed/internal/orders"
+	"distributed/platform/auth"
 	"distributed/platform/concurrency"
 	natsmsg "distributed/platform/messaging/nats"
 	"distributed/platform/middleware"
@@ -45,12 +48,21 @@ func main() {
 	pub := natsmsg.NewPublisher(nc)
 	defer pub.Close()
 
-	srv := orders.NewServer(cfg, orders.NewMemoryStore(), pub,
-		middleware.Check{Name: "nats", Func: natsmsg.HealthCheck(nc)},
-	)
-
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Start even if the auth service is down: keys are fetched again on
+	// the first token, and readiness reports them missing until then.
+	keys := auth.NewJWKSClient(cfg.JWKSURL)
+	if err := keys.Refresh(ctx); err != nil {
+		logger.Warn("could not fetch signing keys yet", "url", cfg.JWKSURL, "error", err)
+	}
+	tokens := auth.NewValidator(keys, cfg.Issuer, orders.Audience)
+
+	srv := orders.NewServer(cfg.Config, orders.NewMemoryStore(), pub, tokens,
+		middleware.Check{Name: "nats", Func: natsmsg.HealthCheck(nc)},
+		middleware.Check{Name: "auth-keys", Func: keys.Ready},
+	)
 
 	serveErr := make(chan error, 1)
 	go func() {
@@ -72,8 +84,24 @@ func main() {
 	logger.Info("orders service stopped")
 }
 
-func loadConfig() (orders.Config, error) {
-	cfg := orders.Config{Port: 8080, HTTPTimeout: 10 * time.Second}
+type config struct {
+	orders.Config
+	JWKSURL string
+	Issuer  string
+}
+
+func loadConfig() (config, error) {
+	cfg := config{
+		Config:  orders.Config{Port: 8080, HTTPTimeout: 10 * time.Second},
+		JWKSURL: "http://localhost:8081/.well-known/jwks.json",
+		Issuer:  "http://localhost:8081",
+	}
+	if v := os.Getenv("AUTH_JWKS_URL"); v != "" {
+		cfg.JWKSURL = v
+	}
+	if v := os.Getenv("AUTH_ISSUER"); v != "" {
+		cfg.Issuer = v
+	}
 
 	if v := os.Getenv("PORT"); v != "" {
 		port, err := strconv.Atoi(v)
