@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
-	"log/slog"
 	"net/http"
 	"net/mail"
 	"strings"
@@ -200,7 +199,4 @@ func writeTokenPair(w http.ResponseWriter, r *http.Request, signer *auth.Signer,
 	})
 }
 
-func internalError(w http.ResponseWriter, r *http.Request, msg string, err error) {
-	slog.ErrorContext(r.Context(), msg, "error", err)
-	middleware.WriteError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "internal server error")
-}
+var internalError = middleware.WriteInternalError

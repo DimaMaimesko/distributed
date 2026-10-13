@@ -13,6 +13,8 @@ import (
 	"strings"
 
 	"github.com/golang-jwt/jwt/v5"
+
+	"distributed/platform/ctxutil"
 )
 
 // Claims is the payload of an access token. The user ID is the standard
@@ -46,26 +48,29 @@ func (s *Scopes) UnmarshalJSON(b []byte) error {
 
 func (s Scopes) Has(scope string) bool { return slices.Contains(s, scope) }
 
-type claimsKey struct{}
-type tokenKey struct{}
+// The keys are defined here rather than in ctxutil because Claims is an
+// auth type; ctxutil importing auth would create an import cycle.
+var (
+	claimsKey = ctxutil.NewKey[*Claims]("claims")
+	tokenKey  = ctxutil.NewKey[string]("bearer_token")
+)
 
 // ClaimsFromContext returns the claims stored by Authenticate.
 func ClaimsFromContext(ctx context.Context) (*Claims, bool) {
-	c, ok := ctx.Value(claimsKey{}).(*Claims)
-	return c, ok
+	return claimsKey.Value(ctx)
 }
 
 // TokenFromContext returns the raw bearer token stored by Authenticate,
 // for forwarding to downstream services.
 func TokenFromContext(ctx context.Context) (string, bool) {
-	t, ok := ctx.Value(tokenKey{}).(string)
-	return t, ok
+	return tokenKey.Value(ctx)
 }
 
-// ContextWithClaims returns ctx carrying claims and the token they came
-// from. Authenticate calls it; tests can use it to fake an authenticated
-// request.
+// ContextWithClaims returns ctx carrying claims, the token they came from,
+// and the user ID (ctxutil.UserID) that log lines pick up. Authenticate
+// calls it; tests can use it to fake an authenticated request.
 func ContextWithClaims(ctx context.Context, c *Claims, token string) context.Context {
-	ctx = context.WithValue(ctx, claimsKey{}, c)
-	return context.WithValue(ctx, tokenKey{}, token)
+	ctx = claimsKey.With(ctx, c)
+	ctx = tokenKey.With(ctx, token)
+	return ctxutil.WithUserID(ctx, c.UserID())
 }

@@ -3,11 +3,16 @@ package middleware
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net/http"
 	"runtime/debug"
 	"sync"
 	"time"
 )
+
+// ErrRequestTimeout is the cause (context.Cause) of a request context
+// cancelled by Timeout.
+var ErrRequestTimeout = errors.New("request exceeded its deadline")
 
 // Timeout gives each request a deadline. If the handler has not finished
 // when it expires, the client gets a 504 immediately, even if the handler
@@ -19,11 +24,14 @@ import (
 // keeps running in the background until it returns, and its writes after
 // the deadline fail with http.ErrHandlerTimeout. Because the response is
 // buffered, streaming (Flush) is not supported below this middleware.
-// Panics in the handler are re-raised here for Recover to catch.
+// Panics in the handler are re-raised here for Recover to catch. If the
+// client disconnects first, the response is a bodiless 499 instead.
 func Timeout(d time.Duration) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ctx, cancel := context.WithTimeout(r.Context(), d)
+			// The cause lets code and logs below tell "our deadline passed"
+			// apart from "the client went away" (context.Cause(ctx)).
+			ctx, cancel := context.WithTimeoutCause(r.Context(), d, ErrRequestTimeout)
 			defer cancel()
 
 			tw := &timeoutWriter{header: make(http.Header)}
@@ -59,7 +67,16 @@ func Timeout(d time.Duration) Middleware {
 				tw.mu.Lock()
 				defer tw.mu.Unlock()
 				tw.timedOut = true
-				WriteError(w, http.StatusGatewayTimeout, "TIMEOUT", "request timed out")
+				// ctx ends for two different reasons: our deadline passed,
+				// or the client disconnected (the parent context was
+				// cancelled). Only the first is a timeout; reporting a
+				// disconnect as 504 would send you hunting for a slow
+				// dependency that does not exist.
+				if errors.Is(context.Cause(ctx), ErrRequestTimeout) {
+					WriteError(w, http.StatusGatewayTimeout, "TIMEOUT", "request timed out")
+				} else {
+					w.WriteHeader(StatusClientClosedRequest)
+				}
 			}
 		})
 	}

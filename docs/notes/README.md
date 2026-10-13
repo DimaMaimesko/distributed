@@ -18,5 +18,6 @@ Each page has the same sections:
 | [4](ch04-http-middleware.md) | HTTP services and middleware chains |
 | [5](ch05-auth-jwt.md) | Authentication and JWT across services |
 | [6](ch06-database.md) | Database access and migrations |
+| [7](ch07-context.md) | Context propagation |
 
 Chapter 1 isn't covered: it had no code in this repo. The Chapter 2 page was written from the code after the fact, so it's lighter than the others.

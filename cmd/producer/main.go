@@ -12,12 +12,13 @@ import (
 	"time"
 
 	"distributed/events"
+	"distributed/platform/ctxutil"
 	"distributed/platform/messaging"
 	natsmsg "distributed/platform/messaging/nats"
 )
 
 func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	logger := slog.New(ctxutil.LogHandler(slog.NewJSONHandler(os.Stdout, nil)))
 
 	natsURL := os.Getenv("NATS_URL")
 	nc, err := natsmsg.Connect(natsURL, "producer", logger)

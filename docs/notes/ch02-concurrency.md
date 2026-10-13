@@ -10,7 +10,7 @@ Concurrency in Go is cheap to start and easy to get wrong. A service needs bound
 - **Closing the jobs channel** is how workers learn there's no more work: `for job := range jobs` ends.
 - **After the context is cancelled**, queued jobs that haven't started are skipped and counted rather than run. Jobs already running aren't interrupted; they must check `ctx` themselves.
 - **A panic in one job must not kill the process.** Recover inside the worker and turn it into an error that includes the stack.
-- **`context.WithoutCancel(ctx)`** (wrapped as `concurrency.Detach`) keeps the request's values, such as trace IDs, but drops its cancellation. Use it for work that must outlive the request, like publishing an event.
+- **`context.WithoutCancel(ctx)`** keeps the request's values, such as trace IDs, but drops its cancellation. Use it for work that must outlive the request, like publishing an event. Chapter 7 replaced the original `concurrency.Detach` with `ctxutil.Detach(ctx, timeout)`, because detached work also needs its own deadline.
 - **Graceful shutdown:** on SIGTERM, stop accepting connections, let requests already in progress finish within a deadline, then exit. `http.Server.Shutdown(ctx)` does this.
 
 ## Rules of thumb
@@ -19,7 +19,7 @@ Concurrency in Go is cheap to start and easy to get wrong. A service needs bound
 - `signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)` is the standard way to start shutdown.
 
 ## In this repo
-`platform/concurrency/workerpool.go`, `shutdown.go` and `context.go`; the demo is `main.go` (`make run-pool-demo`).
+`platform/concurrency/workerpool.go` and `shutdown.go`; the demo is `main.go` (`make run-pool-demo`).
 
 ## Check yourself
 1. Why can't a worker just stop when the context is cancelled, without draining the channel?

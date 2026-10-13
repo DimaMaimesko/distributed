@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,6 +9,8 @@ import (
 	"log/slog"
 	"mime"
 	"net/http"
+
+	"distributed/platform/ctxutil"
 )
 
 // APIError is the JSON body of every error response.
@@ -29,6 +32,29 @@ func WriteJSON(w http.ResponseWriter, status int, v any) {
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		slog.Error("failed to write JSON response", "error", err)
 	}
+}
+
+// StatusClientClosedRequest is the non-standard 499 (from nginx) recorded
+// when the client went away before the response was ready. Nobody reads
+// it; it makes the access log say what happened instead of 200 or 500.
+const StatusClientClosedRequest = 499
+
+// WriteInternalError reports an unexpected failure: it logs err and sends
+// a generic 500 without internal details.
+//
+// If the request was already cancelled, the failure is almost always that
+// cancellation (pgx aborts the query, the publisher refuses), not a bug.
+// Then it logs at INFO, writes 499 and nothing else: no ERROR noise for
+// every impatient client, and no body for a connection that is gone.
+func WriteInternalError(w http.ResponseWriter, r *http.Request, msg string, err error) {
+	ctx := r.Context()
+	if ctxutil.IsCancelled(ctx) {
+		slog.InfoContext(ctx, "request cancelled", "during", msg, "cause", context.Cause(ctx).Error())
+		w.WriteHeader(StatusClientClosedRequest)
+		return
+	}
+	slog.ErrorContext(ctx, msg, "error", err)
+	WriteError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "internal server error")
 }
 
 // MaxBodyBytes is the largest request body DecodeJSON accepts.

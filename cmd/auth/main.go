@@ -32,10 +32,11 @@ import (
 	"distributed/internal/authsvc"
 	"distributed/platform/auth"
 	"distributed/platform/concurrency"
+	"distributed/platform/ctxutil"
 )
 
 func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	logger := slog.New(ctxutil.LogHandler(slog.NewJSONHandler(os.Stdout, nil)))
 	slog.SetDefault(logger)
 
 	if err := run(logger); err != nil {

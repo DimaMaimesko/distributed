@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"distributed/platform/concurrency"
+	"distributed/platform/ctxutil"
 )
 
 func main() {
@@ -24,13 +25,15 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		// Fire-and-forget work that must survive the request finishing.
-		bg := concurrency.Detach(r.Context())
+		bg, cancel := ctxutil.Detach(r.Context(), time.Second)
 		go func() {
+			defer cancel()
 			select {
 			case <-time.After(100 * time.Millisecond):
 				log.Printf("background audit done (ctx err: %v)", bg.Err())
 			case <-bg.Done():
-				// never happens: Detach removes cancellation
+				// only if Detach's own 1s timeout passes; the request
+				// ending does not cancel bg
 			}
 		}()
 		fmt.Fprintln(w, "hello")

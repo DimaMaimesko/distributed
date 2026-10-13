@@ -105,7 +105,10 @@ func (c *JWKSClient) refresh(ctx context.Context, force bool) error {
 		return nil
 	}
 
-	keys, err := c.fetch(ctx)
+	// The fetch serves every request waiting for keys, not just the one
+	// that triggered it, so that request disconnecting must not cancel it.
+	// The HTTP client's own timeout still bounds it.
+	keys, err := c.fetch(context.WithoutCancel(ctx))
 	if err != nil {
 		c.nextAllowed = time.Now().Add(failureBackoff)
 		return err

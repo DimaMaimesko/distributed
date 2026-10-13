@@ -25,6 +25,7 @@ A framework is someone else's middleware. With Go 1.22+ `net/http` (method and p
 ## Traps (bugs in the book's code)
 - **Timeout middleware race:** the book's handler goroutine and the 504 path both write to the same `ResponseWriter`. The fix is to buffer the handler's output, and only the winner writes, like the standard library's `http.TimeoutHandler`.
 - **The book's chain order** loses the request ID in panic logs, logs a timeout as 200, and strips CORS headers from error responses.
+- **Our own Timeout middleware**, found in Chapter 7: it reported a client disconnect as a 504, because its context ends both on its deadline and when the parent is cancelled. Use `context.WithTimeoutCause` to tell them apart.
 - **Recover after headers are sent** can't send a 500. Abort the connection with `panic(http.ErrAbortHandler)`, so the client doesn't take a truncated response as complete.
 - **`DecodeJSON`:**
   - `Content-Type != "application/json"` rejects `application/json; charset=utf-8`; parse it with `mime.ParseMediaType`.

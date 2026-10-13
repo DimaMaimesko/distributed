@@ -5,12 +5,12 @@ import (
 	"crypto/rand"
 	"fmt"
 	"net/http"
+
+	"distributed/platform/ctxutil"
 )
 
 // RequestIDHeader carries the request ID in both directions.
 const RequestIDHeader = "X-Request-ID"
-
-type requestIDKey struct{}
 
 // RequestID gives every request an ID, stored in the context and echoed
 // in the response header. An incoming X-Request-ID (from a gateway or an
@@ -23,7 +23,7 @@ func RequestID() Middleware {
 				id = newRequestID()
 			}
 
-			ctx := context.WithValue(r.Context(), requestIDKey{}, id)
+			ctx := ctxutil.WithRequestID(r.Context(), id)
 			w.Header().Set(RequestIDHeader, id)
 
 			next.ServeHTTP(w, r.WithContext(ctx))
@@ -32,9 +32,10 @@ func RequestID() Middleware {
 }
 
 // RequestIDFromContext returns the request ID, or "" if there is none.
+// It is ctxutil.RequestID, kept here for callers that already import
+// middleware.
 func RequestIDFromContext(ctx context.Context) string {
-	id, _ := ctx.Value(requestIDKey{}).(string)
-	return id
+	return ctxutil.RequestID(ctx)
 }
 
 // validRequestID accepts short, printable, space-free IDs. Anything else

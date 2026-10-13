@@ -12,6 +12,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"distributed/platform/ctxutil"
 )
 
 type options struct {
@@ -85,8 +87,15 @@ func WithTx(ctx context.Context, pool *pgxpool.Pool, fn func(pgx.Tx) error) erro
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
 	}
-	// After a successful Commit this is a no-op.
-	defer tx.Rollback(ctx)
+	// After a successful Commit this is a no-op. Detached, because the
+	// most common reason to roll back is that ctx was cancelled: with a
+	// cancelled ctx the ROLLBACK is never sent, and the pool has to throw
+	// the connection away instead of reusing it.
+	defer func() {
+		rbCtx, cancel := ctxutil.Detach(ctx, 5*time.Second)
+		defer cancel()
+		tx.Rollback(rbCtx)
+	}()
 
 	if err := fn(tx); err != nil {
 		return err

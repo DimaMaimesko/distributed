@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"distributed/platform/ctxutil"
 )
 
 const (
@@ -39,10 +41,8 @@ func ConnectWithRetry(ctx context.Context, connString string, opts ...Option) (*
 		slog.WarnContext(ctx, "database connection failed, retrying",
 			"attempt", attempt, "retry_in", wait.String(), "error", err)
 
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(wait):
+		if err := ctxutil.Sleep(ctx, wait); err != nil {
+			return nil, err
 		}
 		backoff = min(2*backoff, maxBackoff)
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -38,11 +39,20 @@ func ReadinessHandler(checks ...Check) http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), readinessTimeout)
 		defer cancel()
 
+		// Concurrently, so one hanging dependency cannot use up the
+		// budget of the others. All share the same deadline through ctx.
+		errs := make([]error, len(checks))
+		var wg sync.WaitGroup
+		for i, c := range checks {
+			wg.Go(func() { errs[i] = c.Func(ctx) })
+		}
+		wg.Wait()
+
 		var failing []string
-		for _, c := range checks {
-			if err := c.Func(ctx); err != nil {
-				slog.WarnContext(r.Context(), "readiness check failed", "check", c.Name, "error", err)
-				failing = append(failing, c.Name)
+		for i, err := range errs {
+			if err != nil {
+				slog.WarnContext(r.Context(), "readiness check failed", "check", checks[i].Name, "error", err)
+				failing = append(failing, checks[i].Name)
 			}
 		}
 

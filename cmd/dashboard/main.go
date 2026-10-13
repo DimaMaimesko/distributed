@@ -21,6 +21,7 @@ import (
 
 	"distributed/internal/dashboard"
 	"distributed/platform/concurrency"
+	"distributed/platform/ctxutil"
 	natsmsg "distributed/platform/messaging/nats"
 )
 
@@ -28,7 +29,7 @@ import (
 const eventSubject = "orders.>"
 
 func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	logger := slog.New(ctxutil.LogHandler(slog.NewJSONHandler(os.Stdout, nil)))
 	slog.SetDefault(logger)
 
 	port := 8090

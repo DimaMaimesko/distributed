@@ -262,6 +262,15 @@ There are also helpers: `WriteJSON`, `WriteError`, `DecodeJSON` (which rejects u
 
 Without `DATABASE_URL`, orders falls back to an in-memory store. A shared set of tests checks that both stores behave the same.
 
+### Context propagation (`platform/ctxutil`)
+
+Every I/O call takes the request's `ctx`, so cancellation and deadlines reach the database and the publisher:
+- **A client disconnect cancels the work.** pgx sends PostgreSQL a cancel request, so a query or lock wait stops *on the server*. Tests check this in `pg_stat_activity`.
+- **The request is recorded as `499`** (client closed request), not an ERROR or a 500. Only the Timeout middleware's own deadline gives a `504`; `context.Cause` tells the two apart.
+- **Work that must outlive the request detaches with its own timeout:** `ctxutil.Detach(ctx, 5*time.Second)`. Examples are publishing the event for a committed order and rolling back a transaction.
+- **Every log line written with a context gets `request_id` and `user_id` added automatically** (`ctxutil.LogHandler`), however deep in the stack it's written.
+- **Typed context keys:** `ctxutil.NewKey[T]`, so storing and reading a value can't disagree about its type.
+
 ### Messaging (`platform/messaging`)
 
 - Services depend on the `Publisher` and `Subscriber` interfaces, never on NATS directly. NATS, a future Kafka version and test fakes are interchangeable.
@@ -272,7 +281,6 @@ Without `DATABASE_URL`, orders falls back to an in-memory store. A shared set of
 
 - A worker pool with a fixed number of goroutines. It turns panics into errors and skips queued jobs once its context is cancelled.
 - `GracefulShutdown`, which every service uses: it stops taking new requests and lets requests already in progress finish, with a 30s limit.
-- `Detach`, for work that must outlive the request (the event publish uses it).
 
 ---
 
@@ -335,9 +343,10 @@ platform/        the SDK every service uses
   auth/          JWT, JWKS, auth middleware, password hashing, login hub
   middleware/    HTTP middleware chain, JSON errors and decoding, health checks
   messaging/     Publisher and Subscriber interfaces, NATS implementation
+  ctxutil/       typed context keys, request/user IDs, Detach, LogHandler
   database/      pgx pool, connect with retry, migrations, transactions, error helpers
     dbtest/      a throwaway database per test
-  concurrency/   worker pool, graceful shutdown, context helpers
+  concurrency/   worker pool, graceful shutdown
 docs/notes/      key points from each chapter
 scripts/         dev.sh (run everything), demo.sh (curl walkthrough)
 main.go          chapter 2 demo: worker pool and graceful shutdown (make run-pool-demo)
@@ -364,6 +373,7 @@ The tests run against real HTTP servers (`httptest`), real ES256 keys and in-mem
 | 4 | HTTP services and middleware chains | `platform/middleware`, `internal/orders` |
 | 5 | Authentication and JWT across services | `platform/auth`, `internal/authsvc`, `cmd/auth` |
 | 6 | Database access and migrations | `platform/database`, `internal/orders` (Postgres store, migrations) |
+| 7 | Context propagation | `platform/ctxutil`, cancellation tests in `internal/orders` and `platform/database` |
 
 ## Limitations
 

@@ -13,7 +13,7 @@ import (
 
 	"distributed/events"
 	"distributed/platform/auth"
-	"distributed/platform/concurrency"
+	"distributed/platform/ctxutil"
 	"distributed/platform/middleware"
 )
 
@@ -35,10 +35,11 @@ const (
 	maxIdempotencyKeyLen = 255
 )
 
-func internalError(w http.ResponseWriter, r *http.Request, msg string, err error) {
-	slog.ErrorContext(r.Context(), msg, "error", err)
-	middleware.WriteError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "internal server error")
-}
+var internalError = middleware.WriteInternalError
+
+// publishTimeout bounds publishing an event after the request's own
+// context has been detached from.
+const publishTimeout = 5 * time.Second
 
 func notFound(w http.ResponseWriter) {
 	middleware.WriteError(w, http.StatusNotFound, "ORDER_NOT_FOUND", "order not found")
@@ -322,8 +323,12 @@ func publish(ctx context.Context, pub publisher, subject, orderID string, event 
 		slog.ErrorContext(ctx, "failed to marshal event", "subject", subject, "order_id", orderID, "error", err)
 		return
 	}
-	// Detached: the event must go out even if the client has disconnected.
-	if err := pub.Publish(concurrency.Detach(ctx), subject, data); err != nil {
+	// The write it announces has already committed, so the event must go
+	// out even if the client has disconnected: detach from the request,
+	// but with a timeout of its own.
+	pubCtx, cancel := ctxutil.Detach(ctx, publishTimeout)
+	defer cancel()
+	if err := pub.Publish(pubCtx, subject, data); err != nil {
 		slog.WarnContext(ctx, "failed to publish event", "subject", subject, "order_id", orderID, "error", err)
 	}
 }

@@ -37,6 +37,7 @@ import (
 	"distributed/internal/orders"
 	"distributed/platform/auth"
 	"distributed/platform/concurrency"
+	"distributed/platform/ctxutil"
 	"distributed/platform/database"
 	natsmsg "distributed/platform/messaging/nats"
 	"distributed/platform/middleware"
@@ -46,7 +47,7 @@ func main() {
 	migrateOnly := flag.Bool("migrate", false, "apply database migrations and exit")
 	flag.Parse()
 
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	logger := slog.New(ctxutil.LogHandler(slog.NewJSONHandler(os.Stdout, nil)))
 	slog.SetDefault(logger)
 
 	cfg, err := loadConfig()
