@@ -1,0 +1,416 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>System Status</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='6' fill='%2322a06b'/></svg>">
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --border: #e3e6eb;
+    --text: #1d2330;
+    --muted: #677084;
+    --ok: #1f9d63;
+    --ok-bg: #e5f6ee;
+    --warn: #b7791f;
+    --warn-bg: #fdf3e1;
+    --bad: #d03b3b;
+    --bad-bg: #fbe9e9;
+    --accent: #3a64d8;
+    --accent-bg: #e8eefc;
+    --flash: #fff6c7;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #11141a;
+      --panel: #191d25;
+      --border: #2a303c;
+      --text: #e4e7ee;
+      --muted: #8d95a8;
+      --ok: #3cc488;
+      --ok-bg: #173226;
+      --warn: #e0a84a;
+      --warn-bg: #352b17;
+      --bad: #f06a6a;
+      --bad-bg: #3a1c1e;
+      --accent: #7c9cf5;
+      --accent-bg: #1f2840;
+      --flash: #3a3517;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; }
+
+  header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
+  h1 { font-size: 20px; margin: 0; font-weight: 650; }
+  h2 { font-size: 13px; margin: 0 0 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  .updated { margin-left: auto; color: var(--muted); font-size: 12px; }
+
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .pill.ok { background: var(--ok-bg); color: var(--ok); }
+  .pill.warn { background: var(--warn-bg); color: var(--warn); }
+  .pill.bad { background: var(--bad-bg); color: var(--bad); }
+  .pill.neutral { background: var(--accent-bg); color: var(--accent); }
+
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; flex: none; }
+
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+  .grid { display: grid; gap: 16px; }
+  .grid.cols-3 { grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr)); }
+  .grid > * { min-width: 0; }
+  section { margin-top: 16px; }
+
+  /* Topology */
+  .flow { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 12px; }
+  .flow .col { display: flex; flex-direction: column; gap: 8px; }
+  .flow .arrow { color: var(--muted); font-size: 20px; text-align: center; }
+  .node { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); min-width: 0; }
+  .node .name { font-weight: 600; }
+  .node .sub { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .node.ok { color: var(--ok); } .node.warn { color: var(--warn); } .node.bad { color: var(--bad); }
+  .node .name, .node .sub { color: var(--text); }
+  .node .sub { color: var(--muted); }
+  .node > div { min-width: 0; }
+  @media (max-width: 640px) {
+    .flow { grid-template-columns: minmax(0, 1fr); }
+    .flow .arrow { transform: rotate(90deg); }
+  }
+
+  /* Service cards */
+  .card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .card-head .title { font-size: 16px; font-weight: 650; }
+  .card-head .pill { margin-left: auto; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 13px; }
+  .kv dt { color: var(--muted); }
+  .kv dd { margin: 0; overflow-wrap: anywhere; }
+  .chips { display: flex; flex-wrap: wrap; gap: 4px; }
+  .chip { font-family: var(--mono); font-size: 11.5px; padding: 1px 7px; border-radius: 5px; background: var(--accent-bg); color: var(--accent); }
+  .chip.bad { background: var(--bad-bg); color: var(--bad); }
+  .chip.queue { background: var(--warn-bg); color: var(--warn); }
+  .error { color: var(--bad); font-size: 12.5px; margin-top: 8px; overflow-wrap: anywhere; }
+  .muted { color: var(--muted); }
+  .mono { font-family: var(--mono); font-size: 12.5px; }
+
+  .stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-top: 4px; }
+  .stat .v { font-size: 20px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .stat .l { color: var(--muted); font-size: 12px; }
+
+  /* Tables */
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; color: var(--muted); font-weight: 600; font-size: 12px; padding: 6px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  td { padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  th.num { text-align: right; }
+
+  /* Events */
+  .events { display: flex; flex-direction: column; gap: 6px; max-height: 460px; overflow-y: auto; }
+  .event { display: grid; grid-template-columns: 70px 1fr; gap: 10px; padding: 8px 10px; border-radius: 8px; background: var(--bg); border: 1px solid var(--border); }
+  .event.new { animation: flash 1.6s ease-out; }
+  @keyframes flash { from { background: var(--flash); } to { background: var(--bg); } }
+  .event .when { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .event .line { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; }
+  .event .line b { font-weight: 600; }
+  .empty { color: var(--muted); padding: 12px 0; }
+
+  .banner { display: none; margin-bottom: 16px; padding: 10px 14px; border-radius: 8px; background: var(--bad-bg); color: var(--bad); font-weight: 500; }
+  .banner.show { display: block; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>System status</h1>
+    <span id="overall" class="pill neutral"><span class="dot"></span>Loading…</span>
+    <span id="updated" class="updated"></span>
+  </header>
+
+  <div id="banner" class="banner">Dashboard API is unreachable. Is <code>cmd/dashboard</code> still running?</div>
+
+  <div class="panel">
+    <h2>Topology</h2>
+    <div class="flow">
+      <div class="col" id="flow-services"></div>
+      <div class="arrow">→</div>
+      <div class="col" id="flow-nats"></div>
+      <div class="arrow">→</div>
+      <div class="col" id="flow-subscribers"></div>
+    </div>
+  </div>
+
+  <section class="grid cols-3" id="cards"></section>
+
+  <section class="panel">
+    <h2>NATS clients</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th><th>Subscriptions</th><th class="num">Msgs in</th><th class="num">Msgs out</th><th>RTT</th><th>Uptime</th><th>Address</th>
+          </tr>
+        </thead>
+        <tbody id="clients"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2 id="events-title">Live events</h2>
+    <div class="events" id="events"></div>
+  </section>
+</main>
+
+<script>
+"use strict";
+
+const POLL_MS = 2000;
+
+// el builds a DOM element. Strings become text nodes, never HTML, so
+// values coming from services cannot inject markup.
+function el(tag, attrs, ...children) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v === undefined || v === null || v === false) continue;
+    if (k === "class") node.className = v;
+    else node.setAttribute(k, v);
+  }
+  for (const child of children.flat(Infinity)) {
+    if (child === undefined || child === null || child === false) continue;
+    node.append(child instanceof Node ? child : document.createTextNode(String(child)));
+  }
+  return node;
+}
+
+function replace(id, ...children) {
+  document.getElementById(id).replaceChildren(...children.flat(Infinity));
+}
+
+function pill(state, text) {
+  return el("span", { class: "pill " + state }, el("span", { class: "dot" }), text);
+}
+
+function serviceState(s) {
+  if (!s.live) return "bad";
+  return s.ready ? "ok" : "warn";
+}
+
+function serviceLabel(s) {
+  if (!s.live) return "down";
+  return s.ready ? "ready" : "not ready";
+}
+
+const fmt = new Intl.NumberFormat();
+
+function bytes(n) {
+  const units = ["B", "KB", "MB", "GB"];
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  return (i === 0 ? n : n.toFixed(1)) + " " + units[i];
+}
+
+function ago(iso) {
+  const s = Math.max(0, Math.round((Date.now() - new Date(iso)) / 1000));
+  if (s < 60) return s + "s ago";
+  if (s < 3600) return Math.floor(s / 60) + "m ago";
+  return Math.floor(s / 3600) + "h ago";
+}
+
+// --- rates, computed from the change between polls ---
+let prevNats = null;
+function natsRates(n) {
+  const now = Date.now();
+  let rates = null;
+  if (prevNats && n.available) {
+    const dt = (now - prevNats.t) / 1000;
+    if (dt > 0) {
+      rates = {
+        inPerSec: Math.max(0, (n.in_msgs - prevNats.in) / dt),
+        outPerSec: Math.max(0, (n.out_msgs - prevNats.out) / dt),
+      };
+    }
+  }
+  prevNats = n.available ? { t: now, in: n.in_msgs, out: n.out_msgs } : null;
+  return rates;
+}
+
+// --- rendering ---
+
+function renderOverall(st) {
+  const services = st.services.map(serviceState);
+  const natsOk = st.nats.available;
+  let state = "ok", text = "All systems ready";
+  if (services.includes("bad") || !natsOk) { state = "bad"; text = "Degraded"; }
+  else if (services.includes("warn")) { state = "warn"; text = "Partially ready"; }
+  const overall = document.getElementById("overall");
+  overall.className = "pill " + state;
+  overall.replaceChildren(el("span", { class: "dot" }), text);
+}
+
+function node(state, name, sub) {
+  return el("div", { class: "node " + state },
+    el("span", { class: "dot" }),
+    el("div", {}, el("div", { class: "name" }, name), sub ? el("div", { class: "sub" }, sub) : null));
+}
+
+function renderTopology(st) {
+  replace("flow-services", st.services.map(s =>
+    node(serviceState(s), s.name, serviceLabel(s) + (s.live ? " · " + s.latency_ms + " ms" : ""))));
+
+  const n = st.nats;
+  replace("flow-nats", node(n.available ? "ok" : "bad", "NATS",
+    n.available ? "v" + n.version + " · " + n.clients.length + " clients" : "monitoring unavailable"));
+
+  const subscribers = (n.clients || []).filter(c => c.subscriptions && c.subscriptions.length);
+  replace("flow-subscribers", subscribers.length
+    ? subscribers.map(c => node("ok", c.name || "(unnamed)",
+        c.subscriptions.map(s => s.subject + (s.queue_group ? " [" + s.queue_group + "]" : "")).join(", ")))
+    : el("div", { class: "muted" }, n.available ? "no subscribers" : "—"));
+}
+
+function renderCards(st, rates) {
+  const cards = st.services.map(s => {
+    const failing = (s.failing || []).length
+      ? el("div", { class: "chips" }, s.failing.map(f => el("span", { class: "chip bad" }, f)))
+      : el("span", { class: "muted" }, s.live ? "none" : "—");
+    return el("div", { class: "panel" },
+      el("div", { class: "card-head" },
+        el("span", { class: "title" }, s.name),
+        pill(serviceState(s), serviceLabel(s))),
+      el("dl", { class: "kv" },
+        el("dt", {}, "URL"), el("dd", { class: "mono" }, s.url),
+        el("dt", {}, "Live"), el("dd", {}, s.live ? "yes" : "no"),
+        el("dt", {}, "Ready"), el("dd", {}, s.ready ? "yes" : "no"),
+        el("dt", {}, "Failing"), el("dd", {}, failing),
+        el("dt", {}, "Latency"), el("dd", {}, s.live ? s.latency_ms + " ms" : "—")),
+      s.error ? el("div", { class: "error" }, s.error) : null);
+  });
+
+  const n = st.nats;
+  const rate = v => rates ? v.toFixed(1) + "/s" : "…";
+  cards.push(el("div", { class: "panel" },
+    el("div", { class: "card-head" },
+      el("span", { class: "title" }, "NATS"),
+      pill(n.available ? "ok" : "bad", n.available ? "up" : "unavailable")),
+    n.available
+      ? [
+          el("dl", { class: "kv" },
+            el("dt", {}, "Version"), el("dd", {}, n.version),
+            el("dt", {}, "Uptime"), el("dd", {}, n.uptime),
+            el("dt", {}, "Clients"), el("dd", {}, n.clients.length)),
+          el("div", { class: "stats" },
+            stat(fmt.format(n.in_msgs), "msgs in · " + rate(rates ? rates.inPerSec : 0)),
+            stat(fmt.format(n.out_msgs), "msgs out · " + rate(rates ? rates.outPerSec : 0)),
+            stat(bytes(n.in_bytes), "bytes in"),
+            stat(bytes(n.out_bytes), "bytes out")),
+        ]
+      : el("div", { class: "error" }, n.error)));
+
+  replace("cards", cards);
+}
+
+function stat(value, label) {
+  return el("div", { class: "stat" }, el("div", { class: "v" }, value), el("div", { class: "l" }, label));
+}
+
+function renderClients(st) {
+  const clients = st.nats.clients || [];
+  if (!clients.length) {
+    replace("clients", el("tr", {}, el("td", { colspan: 7, class: "muted" },
+      st.nats.available ? "No clients connected." : "NATS monitoring unavailable.")));
+    return;
+  }
+  replace("clients", clients.map(c => el("tr", {},
+    el("td", {}, el("b", {}, c.name || "(unnamed)"), " ", el("span", { class: "muted" }, c.lang)),
+    el("td", {}, (c.subscriptions || []).length
+      ? el("div", { class: "chips" }, c.subscriptions.map(s => [
+          el("span", { class: "chip" }, s.subject),
+          s.queue_group ? el("span", { class: "chip queue", title: "queue group" }, "queue: " + s.queue_group) : null,
+        ]))
+      : el("span", { class: "muted" }, "publisher only")),
+    el("td", { class: "num" }, fmt.format(c.in_msgs)),
+    el("td", { class: "num" }, fmt.format(c.out_msgs)),
+    el("td", { class: "mono" }, c.rtt),
+    el("td", {}, c.uptime),
+    el("td", { class: "mono muted" }, c.addr))));
+}
+
+const seenEvents = new Set();
+let firstRender = true;
+
+function renderEvents(st) {
+  replace("events-title", "Live events · " + fmt.format(st.events_total) + " received");
+  if (!st.events.length) {
+    replace("events", el("div", { class: "empty" },
+      "No events yet. Create an order (make demo) and it appears here."));
+    return;
+  }
+  replace("events", st.events.map(e => {
+    const key = e.received_at + e.subject;
+    const isNew = !firstRender && !seenEvents.has(key);
+    seenEvents.add(key);
+    return el("div", { class: "event" + (isNew ? " new" : "") },
+      el("div", { class: "when" }, ago(e.received_at)),
+      el("div", {},
+        el("div", { class: "line" }, el("span", { class: "chip" }, e.subject)),
+        eventBody(e)));
+  }));
+  firstRender = false;
+}
+
+function eventBody(e) {
+  const d = e.data;
+  if (!d) return el("div", { class: "muted" }, "(no payload)");
+  if (d.id !== undefined && d.quantity !== undefined) {
+    return el("div", { class: "line" },
+      el("span", {}, "order ", el("b", { class: "mono" }, d.id)),
+      d.user_id ? el("span", {}, "user ", el("span", { class: "mono" }, d.user_id)) : null,
+      el("span", {}, "product ", el("b", {}, d.product_id)),
+      el("span", {}, "qty ", el("b", {}, d.quantity)));
+  }
+  return el("div", { class: "mono muted" }, JSON.stringify(d));
+}
+
+let lastOk = null;
+function renderUpdated() {
+  document.getElementById("updated").textContent =
+    lastOk ? "updated " + ago(lastOk) + " · refreshes every " + POLL_MS / 1000 + "s" : "";
+}
+
+async function poll() {
+  try {
+    const res = await fetch("/api/status", { cache: "no-store" });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const st = await res.json();
+    const rates = natsRates(st.nats);
+    renderOverall(st);
+    renderTopology(st);
+    renderCards(st, rates);
+    renderClients(st);
+    renderEvents(st);
+    lastOk = st.checked_at;
+    document.getElementById("banner").classList.remove("show");
+  } catch (err) {
+    document.getElementById("banner").classList.add("show");
+    const overall = document.getElementById("overall");
+    overall.className = "pill bad";
+    overall.replaceChildren(el("span", { class: "dot" }), "Dashboard offline");
+  }
+  renderUpdated();
+}
+
+poll();
+setInterval(poll, POLL_MS);
+setInterval(renderUpdated, 1000);
+</script>
+</body>
+</html>

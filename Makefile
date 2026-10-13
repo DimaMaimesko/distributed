@@ -2,6 +2,7 @@
 
 AUTH_PORT      ?= 8081
 ORDERS_PORT    ?= 8080
+DASHBOARD_PORT ?= 8090
 NATS_URL       ?= nats://localhost:4222
 KEY_FILE       ?= key.pem
 ADMIN_EMAIL    ?= admin@example.com
@@ -10,15 +11,19 @@ ADMIN_PASSWORD ?= admin-pass-123
 AUTH_URL := http://localhost:$(AUTH_PORT)
 NATS_CONTAINER := distributed-nats
 
-export AUTH_PORT ORDERS_PORT NATS_URL KEY_FILE ADMIN_EMAIL ADMIN_PASSWORD
+export AUTH_PORT ORDERS_PORT DASHBOARD_PORT NATS_URL KEY_FILE ADMIN_EMAIL ADMIN_PASSWORD
 
 .DEFAULT_GOAL := help
 
 ##@ Quick start
 
 .PHONY: dev
-dev: ## Run NATS, auth, orders and consumer together (Ctrl-C stops all)
+dev: ## Run NATS, auth, orders, consumer and dashboard (Ctrl-C stops all)
 	./scripts/dev.sh
+
+.PHONY: open
+open: ## Open the status dashboard in the browser
+	open http://localhost:$(DASHBOARD_PORT) 2>/dev/null || xdg-open http://localhost:$(DASHBOARD_PORT)
 
 .PHONY: demo
 demo: ## Walk through the API with curl (needs `make dev` running)
@@ -27,8 +32,8 @@ demo: ## Walk through the API with curl (needs `make dev` running)
 ##@ Infrastructure
 
 .PHONY: nats
-nats: ## Start NATS in Docker on :4222
-	docker run -d --rm --name $(NATS_CONTAINER) -p 4222:4222 nats:latest
+nats: ## Start NATS in Docker on :4222, with monitoring on :8222
+	docker run -d --rm --name $(NATS_CONTAINER) -p 4222:4222 -p 8222:8222 nats:latest -m 8222
 
 .PHONY: nats-stop
 nats-stop: ## Stop the NATS container
@@ -63,6 +68,12 @@ run-consumers: ## Two consumers in one queue group (each event goes to one)
 	NATS_URL=$(NATS_URL) QUEUE_GROUP=workers go run ./cmd/consumer & \
 	NATS_URL=$(NATS_URL) QUEUE_GROUP=workers go run ./cmd/consumer & \
 	wait
+
+.PHONY: run-dashboard
+run-dashboard: ## Status dashboard on :8090
+	PORT=$(DASHBOARD_PORT) NATS_URL=$(NATS_URL) \
+	AUTH_URL=$(AUTH_URL) ORDERS_URL=http://localhost:$(ORDERS_PORT) \
+	go run ./cmd/dashboard
 
 .PHONY: run-producer
 run-producer: ## Chapter 3 demo producer: an order event every 2s

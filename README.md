@@ -5,6 +5,7 @@ A small distributed system in Go, built chapter by chapter while working through
 - **auth** registers users, checks passwords and issues signed JWT access tokens. It publishes its public keys at a JWKS endpoint.
 - **orders** creates and reads orders. It checks tokens locally, with no call to auth, and announces every new order on NATS.
 - **consumer** receives `orders.created` events from NATS and logs them.
+- **dashboard** is a status page at http://localhost:8090. It shows each service's health, the NATS server and its clients, and events as they happen.
 
 ```mermaid
 flowchart LR
@@ -21,6 +22,7 @@ flowchart LR
 
     nats[(NATS :4222)]
     consumer[consumer]
+    dashboard[dashboard :8090]
 
     client -- "1. log in" --> login
     login -- "2. access token (JWT)" --> client
@@ -28,6 +30,9 @@ flowchart LR
     orders -. "fetch public keys (cached)" .-> jwks
     api -- "orders.created" --> nats
     nats --> consumer
+    nats -. "copy of every event" .-> dashboard
+    dashboard -. "polls /healthz" .-> auth
+    dashboard -. "polls /healthz" .-> orders
 ```
 
 Everything is the standard library except three packages: `nats.go` (messaging), `golang-jwt/jwt/v5` (tokens) and `x/crypto/bcrypt` (password hashing).
@@ -39,14 +44,15 @@ Everything is the standard library except three packages: `nats.go` (messaging),
 **You need:** Go 1.27+, Docker (for NATS), `openssl` and `curl`.
 
 ```sh
-make dev     # terminal 1: starts NATS, auth, orders and consumer
+make dev     # terminal 1: starts NATS, auth, orders, consumer and dashboard
+make open    # opens the dashboard at http://localhost:8090
 make demo    # terminal 2: walks through the whole API with curl
 ```
 
 `make dev` does the following:
-- Starts NATS in Docker if nothing is listening on :4222.
+- Starts NATS in Docker if nothing is listening on :4222, with monitoring on :8222 for the dashboard.
 - Creates a signing key `key.pem` if it doesn't exist.
-- Builds the binaries and runs all three services, with each log line prefixed by its service name.
+- Builds the binaries and runs auth, orders, the consumer and the dashboard, with each log line prefixed by its service name.
 - Stops everything on Ctrl-C.
 
 It also creates an admin user, `admin@example.com` / `admin-pass-123`.
@@ -70,9 +76,28 @@ make nats           # NATS in Docker
 make run-auth       # :8081, creates key.pem on first run
 make run-orders     # :8080
 make run-consumer
+make run-dashboard  # :8090
 ```
 
 The ports, admin credentials and key file are Make variables, for example `make dev ORDERS_PORT=9090`.
+
+### The dashboard
+
+Open http://localhost:8090 (or run `make open`) while the system is running. The page refreshes every 2 seconds and shows:
+
+- **Topology:** auth and orders, then NATS, then everything subscribed to NATS. A green dot means ready, amber means alive but not ready, red means down.
+- **Service cards:** live and ready state, which readiness checks are failing (e.g. `nats`, `auth-keys`), and probe latency.
+- **NATS:** version, uptime, message and byte totals, and messages per second.
+- **NATS clients:** every connection by name, with its subscriptions, queue group, message counts and round-trip time.
+- **Live events:** each `orders.*` event as it's published. New events flash briefly.
+
+Things to try while watching it:
+- `make demo`: events appear in the feed.
+- Stop orders with Ctrl-C: its tile turns red, and it disappears from the NATS clients.
+- Stop NATS: orders turns amber, with `nats` listed as failing. Start NATS again and it recovers on its own.
+- `make run-consumers`: two consumers in the `workers` queue group split the events between them (watch "Msgs out"). The dashboard has no queue group, so it receives a copy of every event.
+
+The dashboard reads NATS's built-in monitoring API, which needs `nats-server -m 8222`. `make nats` and `make dev` start NATS that way. If you started NATS yourself without the flag, the NATS tile says so.
 
 ---
 
@@ -246,6 +271,8 @@ All configuration comes from environment variables. The Make targets set them fo
 
 **consumer and producer**: `NATS_URL`. The consumer also reads `QUEUE_GROUP`.
 
+**dashboard**: `PORT` (default `8090`), `AUTH_URL` (`http://localhost:8081`), `ORDERS_URL` (`http://localhost:8080`), `NATS_URL`, `NATS_MONITOR_URL` (`http://localhost:8222`).
+
 Both auth and orders start even if NATS or auth is down. `/healthz/ready` returns 503 until their dependencies are reachable, so an orchestrator won't send them traffic too early.
 
 ---
@@ -258,9 +285,11 @@ cmd/
   orders/        orders service
   consumer/      logs orders.created events
   producer/      demo producer from chapter 3 (an event every 2s, no HTTP)
+  dashboard/     status page
 internal/
   authsvc/       auth service handlers, user and refresh-token store, password agent
   orders/        orders handlers, store, routes
+  dashboard/     health polling, NATS monitoring client, event feed, embedded HTML page
 events/          event types and subject names shared by producer and consumers
 platform/        the SDK every service uses
   auth/          JWT, JWKS, auth middleware, password hashing, login hub
