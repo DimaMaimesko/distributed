@@ -30,10 +30,17 @@ func NewServer(cfg Config, store Store, pub publisher, tokens *auth.Validator, r
 	// Protected routes: auth is applied per route, so a new route is
 	// public only if it is registered without it.
 	authn := auth.Authenticate(tokens)
-	mux.Handle("GET /orders/{id}",
-		middleware.Chain(getOrderHandler(store), authn, auth.RequireScope("orders:read")))
-	mux.Handle("POST /orders",
-		middleware.Chain(createOrderHandler(store, pub), authn, auth.RequireScope("orders:write")))
+	read := func(h http.Handler) http.Handler {
+		return middleware.Chain(h, authn, auth.RequireScope("orders:read"))
+	}
+	write := func(h http.Handler) http.Handler {
+		return middleware.Chain(h, authn, auth.RequireScope("orders:write"))
+	}
+	mux.Handle("GET /orders", read(listOrdersHandler(store)))
+	mux.Handle("GET /orders/{id}", read(getOrderHandler(store)))
+	mux.Handle("GET /orders/{id}/history", read(historyHandler(store)))
+	mux.Handle("POST /orders", write(createOrderHandler(store, pub)))
+	mux.Handle("PATCH /orders/{id}", write(updateStatusHandler(store, pub)))
 
 	handler := middleware.Chain(
 		mux,

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Walks through the system with curl against running services (make dev):
-# register, log in, create and read orders, check authorization, refresh
-# and log out. Needs only bash, curl and sed.
+# register, log in, create, list and read orders, check authorization,
+# update status with optimistic locking, refresh and log out. Needs only bash, curl and sed.
 set -uo pipefail
 
 : "${AUTH_PORT:=8081}"
@@ -80,6 +80,31 @@ show -H "Authorization: Bearer $BOB" "$ORDERS/orders/$ORDER_ID"
 
 step "admin reads ann's order"
 show -H "Authorization: Bearer $ADMIN" "$ORDERS/orders/$ORDER_ID"
+
+step "Retry-safe create: the same Idempotency-Key twice gives one order (201, then 200 replay)"
+KEY="demo-$RANDOM-$RANDOM"
+for attempt in 1 2; do
+	show -H "$JSON" -H "Authorization: Bearer $ANN" -H "Idempotency-Key: $KEY" \
+		-d '{"product_id":"prod-002","quantity":1}' "$ORDERS/orders"
+done
+
+step "ann lists her orders, newest first"
+show -H "Authorization: Bearer $ANN" "$ORDERS/orders?limit=5"
+
+step "Admin marks ann's first order paid (version 1 -> 2)"
+show -H "$JSON" -H "Authorization: Bearer $ADMIN" -X PATCH \
+	-d '{"status":"paid","version":1}' "$ORDERS/orders/$ORDER_ID"
+
+step "ann tries to cancel with the version she saw before: 409, someone changed it first"
+show -H "$JSON" -H "Authorization: Bearer $ANN" -X PATCH \
+	-d '{"status":"cancelled","version":1}' "$ORDERS/orders/$ORDER_ID"
+
+step "ann re-reads (version 2) and cancels"
+show -H "$JSON" -H "Authorization: Bearer $ANN" -X PATCH \
+	-d '{"status":"cancelled","version":2}' "$ORDERS/orders/$ORDER_ID"
+
+step "Status history, written in the same transaction as each change"
+show -H "Authorization: Bearer $ANN" "$ORDERS/orders/$ORDER_ID/history"
 
 step "Validation error: unknown field"
 show -H "$JSON" -H "Authorization: Bearer $ANN" \

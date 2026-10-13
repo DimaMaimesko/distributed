@@ -15,3 +15,16 @@ type OrderCreated struct {
 	Quantity  int       `json:"quantity"`
 	CreatedAt time.Time `json:"created_at"`
 }
+
+// SubjectOrderStatusChanged carries OrderStatusChanged events.
+const SubjectOrderStatusChanged = "orders.status_changed"
+
+type OrderStatusChanged struct {
+	ID        string    `json:"id"`
+	UserID    string    `json:"user_id"`
+	From      string    `json:"from"`
+	To        string    `json:"to"`
+	Version   int       `json:"version"`
+	ChangedBy string    `json:"changed_by"`
+	ChangedAt time.Time `json:"changed_at"`
+}

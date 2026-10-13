@@ -1,9 +1,11 @@
 # distributed
 
-A small distributed system in Go, built chapter by chapter while working through a book on distributed systems. It has two HTTP services, a message queue and a consumer, plus a reusable `platform/` SDK that every service builds on.
+A small distributed system in Go, built chapter by chapter while working through a book on distributed systems. It has two HTTP services, a database, a message queue and a consumer, plus a reusable `platform/` SDK that every service builds on.
+
+**Learning notes:** [`docs/notes/`](docs/notes/README.md) has a short page of key points for each chapter.
 
 - **auth** registers users, checks passwords and issues signed JWT access tokens. It publishes its public keys at a JWKS endpoint.
-- **orders** creates and reads orders. It checks tokens locally, with no call to auth, and announces every new order on NATS.
+- **orders** creates, lists and updates orders, stored in PostgreSQL. It checks tokens locally, with no call to auth, and announces every new order and status change on NATS.
 - **consumer** receives `orders.created` events from NATS and logs them.
 - **dashboard** is a status page at http://localhost:8090. It shows each service's health, the NATS server and its clients, and events as they happen.
 
@@ -21,6 +23,7 @@ flowchart LR
     end
 
     nats[(NATS :4222)]
+    pg[(PostgreSQL :5434)]
     consumer[consumer]
     dashboard[dashboard :8090]
 
@@ -28,6 +31,7 @@ flowchart LR
     login -- "2. access token (JWT)" --> client
     client -- "3. Bearer token" --> api
     orders -. "fetch public keys (cached)" .-> jwks
+    api -- "orders, status history" --> pg
     api -- "orders.created" --> nats
     nats --> consumer
     nats -. "copy of every event" .-> dashboard
@@ -35,22 +39,23 @@ flowchart LR
     dashboard -. "polls /healthz" .-> orders
 ```
 
-Everything is the standard library except three packages: `nats.go` (messaging), `golang-jwt/jwt/v5` (tokens) and `x/crypto/bcrypt` (password hashing).
+Everything is the standard library except: `nats.go` (messaging), `golang-jwt/jwt/v5` (tokens), `x/crypto/bcrypt` (password hashing), `pgx/v5` (PostgreSQL) and `golang-migrate` (schema migrations).
 
 ---
 
 ## Quick start
 
-**You need:** Go 1.27+, Docker (for NATS), `openssl` and `curl`.
+**You need:** Go 1.27+, Docker (for NATS and PostgreSQL), `openssl` and `curl`.
 
 ```sh
-make dev     # terminal 1: starts NATS, auth, orders, consumer and dashboard
+make dev     # terminal 1: starts NATS, Postgres, auth, orders, consumer and dashboard
 make open    # opens the dashboard at http://localhost:8090
 make demo    # terminal 2: walks through the whole API with curl
 ```
 
 `make dev` does the following:
 - Starts NATS in Docker if nothing is listening on :4222, with monitoring on :8222 for the dashboard.
+- Starts PostgreSQL 17 in Docker on :5434 if nothing is listening there. Port 5434 avoids clashing with a local Postgres on 5432. The orders service applies its migrations at startup.
 - Creates a signing key `key.pem` if it doesn't exist.
 - Builds the binaries and runs auth, orders, the consumer and the dashboard, with each log line prefixed by its service name.
 - Stops everything on Ctrl-C.
@@ -61,6 +66,8 @@ It also creates an admin user, `admin@example.com` / `admin-pass-123`.
 - Registers two users and logs in.
 - Shows what's inside a token.
 - Creates an order and reads it as its owner, another user and the admin.
+- Retries a create with the same `Idempotency-Key` and gets the same order back.
+- Lists orders, then shows an optimistic-locking conflict (409) and the status history.
 - Refreshes the token, then logs out.
 
 Each step prints the HTTP status, and you can watch the consumer log the event in terminal 1. At the end it prints an `export TOKEN=...` line for your own requests.
@@ -73,8 +80,9 @@ If you'd rather have each service in its own terminal:
 
 ```sh
 make nats           # NATS in Docker
+make postgres       # PostgreSQL in Docker on :5434
 make run-auth       # :8081, creates key.pem on first run
-make run-orders     # :8080
+make run-orders     # :8080, applies migrations, then serves
 make run-consumer
 make run-dashboard  # :8090
 ```
@@ -178,17 +186,25 @@ Token pair:
 
 | Method & path | Needs | Success | Errors |
 |---|---|---|---|
-| `POST /orders` `{"product_id","quantity"}` | token with `orders:write` | `201` order + `Location` header | `400`, `401`, `403 INSUFFICIENT_SCOPE`, `413`, `415` |
-| `GET /orders/{id}` | token with `orders:read`; you must own the order or be `admin` | `200` order | `401`, `403`, `404 ORDER_NOT_FOUND` |
+| `POST /orders` `{"product_id","quantity"}`, optional `Idempotency-Key` header | `orders:write` | `201` order + `Location`; `200` + `Idempotent-Replayed: true` for a retry with the same key | `400`, `401`, `403 INSUFFICIENT_SCOPE`, `413`, `415`, `422 IDEMPOTENCY_KEY_REUSED` |
+| `GET /orders?limit=20&offset=0` | `orders:read` | `200` your orders, newest first (`limit` 1-100) | `400 INVALID_QUERY` |
+| `GET /orders/{id}` | `orders:read`; you own it, or you're `admin` | `200` order | `401`, `403`, `404 ORDER_NOT_FOUND` |
+| `PATCH /orders/{id}` `{"status","version"}` | `orders:write`; owners may only cancel, admins may make any allowed change | `200` updated order | `403`, `404`, `409 VERSION_CONFLICT`, `422 INVALID_TRANSITION` |
+| `GET /orders/{id}/history` | `orders:read` | `200` status changes, oldest first | `404` |
 | `GET /healthz/live` | | `200` always, while the process is alive | |
-| `GET /healthz/ready` | | `200`, or `503` with the failing checks (`nats`, `auth-keys`) | |
+| `GET /healthz/ready` | | `200`, or `503` with the failing checks (`postgres`, `nats`, `auth-keys`) | |
 
 Reading someone else's order returns `404`, not `403`, so the caller can't tell that it exists.
 
-### Event: `orders.created` (NATS)
+**Order lifecycle:** `pending → paid → shipped`, and `pending` or `paid` can go to `cancelled`. `shipped` and `cancelled` are final. Every change increments `version`. Send back the version you last saw; if someone changed the order since, you get `409` and must re-read it.
+
+### Events (NATS)
 
 ```json
+// orders.created
 {"id": "ord_...", "user_id": "usr_...", "product_id": "p1", "quantity": 2, "created_at": "2026-10-13T10:00:00Z"}
+// orders.status_changed
+{"id": "ord_...", "user_id": "usr_...", "from": "pending", "to": "paid", "version": 2, "changed_by": "usr_...", "changed_at": "..."}
 ```
 
 ---
@@ -226,6 +242,25 @@ The order matters:
 - **Timeout** runs the handler in a goroutine that writes into a buffer. A slow handler gets a clean `504` without two goroutines writing to the response at once.
 
 There are also helpers: `WriteJSON`, `WriteError`, `DecodeJSON` (which rejects unknown fields and trailing data, and limits bodies to 1 MB), and liveness and readiness handlers.
+
+### Database (`platform/database`)
+
+- **pgx pool.** `database.NewDB` sets the pool size (default `2 × CPUs`, at least 4), connection lifetimes, and `application_name`, so `SELECT * FROM pg_stat_activity` shows which service holds each connection.
+- **`ConnectWithRetry`** retries up to 6 times with exponential backoff and jitter, for when the database starts at the same time as the service. Then it fails with the real error.
+- **Migrations** are SQL files compiled into the binary (`internal/orders/migrations/`) and applied with golang-migrate's pgx driver. A PostgreSQL advisory lock means several instances starting together apply each migration once.
+  - In development, `DB_MIGRATE=true` migrates at startup.
+  - In production, run `orders -migrate` (or `make migrate`) as its own step.
+- **Error helpers:** `IsNotFound`, `IsDuplicate`, `IsCheckViolation`, `IsForeignKeyViolation`, `IsRetryable` and `ConstraintName`. The repository turns PostgreSQL errors into domain errors (`ErrNotFound`, `ErrVersionConflict`, ...), so handlers never see pgx.
+- **`WithTx`** commits if the function returns nil, and rolls back on an error or a panic.
+- **What the orders schema shows:**
+  - CHECK constraints are the last line of defence against bad data.
+  - Idempotency keys are unique per user, `UNIQUE (user_id, idempotency_key)`.
+  - An index on `(user_id, created_at DESC)` matches the list query's filter and sort.
+  - A partial index covers only orders still in progress.
+  - Status changes are written to `order_status_history` in the same transaction as the update.
+- **Optimistic locking:** `UPDATE ... WHERE id = $1 AND version = $3`. Of 20 concurrent updates with the same version, exactly one wins; there's a test for this.
+
+Without `DATABASE_URL`, orders falls back to an in-memory store. A shared set of tests checks that both stores behave the same.
 
 ### Messaging (`platform/messaging`)
 
@@ -267,13 +302,18 @@ All configuration comes from environment variables. The Make targets set them fo
 | `NATS_URL` | `nats://127.0.0.1:4222` | |
 | `AUTH_JWKS_URL` | `http://localhost:8081/.well-known/jwks.json` | |
 | `AUTH_ISSUER` | `http://localhost:8081` | |
+| `DATABASE_URL` | *(none)* | `postgres://...`; without it, orders are kept in memory |
+| `DB_MIGRATE` | `false` | `true` applies migrations at startup |
+| `DB_MAX_CONNS` | `2 × CPUs` (min 4) | pool size |
 | `HTTP_TIMEOUT`, `ALLOWED_ORIGINS` | as for auth | |
+
+`orders -migrate` applies migrations and exits.
 
 **consumer and producer**: `NATS_URL`. The consumer also reads `QUEUE_GROUP`.
 
 **dashboard**: `PORT` (default `8090`), `AUTH_URL` (`http://localhost:8081`), `ORDERS_URL` (`http://localhost:8080`), `NATS_URL`, `NATS_MONITOR_URL` (`http://localhost:8222`).
 
-Both auth and orders start even if NATS or auth is down. `/healthz/ready` returns 503 until their dependencies are reachable, so an orchestrator won't send them traffic too early.
+Both auth and orders start even if NATS or auth is down. The database is different: orders retries for a few seconds, then exits, because it can't do anything without it. `/healthz/ready` returns 503 until their dependencies are reachable, so an orchestrator won't send them traffic too early.
 
 ---
 
@@ -288,14 +328,17 @@ cmd/
   dashboard/     status page
 internal/
   authsvc/       auth service handlers, user and refresh-token store, password agent
-  orders/        orders handlers, store, routes
+  orders/        orders handlers, Postgres and memory stores, routes, migrations/
   dashboard/     health polling, NATS monitoring client, event feed, embedded HTML page
 events/          event types and subject names shared by producer and consumers
 platform/        the SDK every service uses
   auth/          JWT, JWKS, auth middleware, password hashing, login hub
   middleware/    HTTP middleware chain, JSON errors and decoding, health checks
   messaging/     Publisher and Subscriber interfaces, NATS implementation
+  database/      pgx pool, connect with retry, migrations, transactions, error helpers
+    dbtest/      a throwaway database per test
   concurrency/   worker pool, graceful shutdown, context helpers
+docs/notes/      key points from each chapter
 scripts/         dev.sh (run everything), demo.sh (curl walkthrough)
 main.go          chapter 2 demo: worker pool and graceful shutdown (make run-pool-demo)
 ```
@@ -303,12 +346,14 @@ main.go          chapter 2 demo: worker pool and graceful shutdown (make run-poo
 ## Development
 
 ```sh
-make test     # all tests with the race detector
+make test     # all tests with the race detector; database tests are skipped
+make test-db  # also the PostgreSQL tests (start it first: make postgres)
 make check    # gofmt + go vet + tests: run before committing
 make cover    # coverage report in the browser
+make psql     # SQL shell on the orders database
 ```
 
-The tests run against real HTTP servers (`httptest`), real ES256 keys and in-memory stores. They need no NATS and no Docker.
+The tests run against real HTTP servers (`httptest`), real ES256 keys and in-memory stores; `make test` needs no Docker. The database tests (`make test-db`) each create their own throwaway PostgreSQL database, apply the real migrations, and drop it afterwards.
 
 ## Chapters
 
@@ -318,12 +363,15 @@ The tests run against real HTTP servers (`httptest`), real ES256 keys and in-mem
 | 3 | Two services, one queue (NATS) | `platform/messaging`, `cmd/producer`, `cmd/consumer` |
 | 4 | HTTP services and middleware chains | `platform/middleware`, `internal/orders` |
 | 5 | Authentication and JWT across services | `platform/auth`, `internal/authsvc`, `cmd/auth` |
+| 6 | Database access and migrations | `platform/database`, `internal/orders` (Postgres store, migrations) |
 
 ## Limitations
 
 These are deliberate for now; later chapters address some of them.
 
-- **Everything is in memory.** Users, orders and refresh tokens disappear when a service restarts.
+- **Auth is still in memory.** Users and refresh tokens disappear when auth restarts; orders are in PostgreSQL.
+- **The dev database isn't persistent.** The Docker container runs with `--rm`, so stopping it deletes the data.
+- **Pagination uses offset.** Deep pages get slower, and rows can shift between pages; keyset pagination (`WHERE created_at < $cursor`) fixes both.
 - **No durable messaging.** NATS Core drops events when no consumer is running.
 - **Store, then publish, isn't atomic.** An event can be lost after its order is saved; the outbox pattern fixes this.
 - **No service-to-service tokens.** Background jobs would need their own credentials (chapter 9).

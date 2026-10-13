@@ -7,18 +7,23 @@ NATS_URL       ?= nats://localhost:4222
 KEY_FILE       ?= key.pem
 ADMIN_EMAIL    ?= admin@example.com
 ADMIN_PASSWORD ?= admin-pass-123
+PG_PORT        ?= 5434
+DATABASE_URL   ?= postgres://orders:orders@localhost:$(PG_PORT)/orders?sslmode=disable
+# Tests create and drop their own databases through this connection.
+TEST_DATABASE_URL ?= postgres://orders:orders@localhost:$(PG_PORT)/postgres?sslmode=disable
 
 AUTH_URL := http://localhost:$(AUTH_PORT)
 NATS_CONTAINER := distributed-nats
+PG_CONTAINER   := distributed-postgres
 
-export AUTH_PORT ORDERS_PORT DASHBOARD_PORT NATS_URL KEY_FILE ADMIN_EMAIL ADMIN_PASSWORD
+export AUTH_PORT ORDERS_PORT DASHBOARD_PORT NATS_URL KEY_FILE ADMIN_EMAIL ADMIN_PASSWORD PG_PORT DATABASE_URL
 
 .DEFAULT_GOAL := help
 
 ##@ Quick start
 
 .PHONY: dev
-dev: ## Run NATS, auth, orders, consumer and dashboard (Ctrl-C stops all)
+dev: ## Run NATS, Postgres, auth, orders, consumer and dashboard (Ctrl-C stops all)
 	./scripts/dev.sh
 
 .PHONY: open
@@ -39,6 +44,26 @@ nats: ## Start NATS in Docker on :4222, with monitoring on :8222
 nats-stop: ## Stop the NATS container
 	docker stop $(NATS_CONTAINER)
 
+.PHONY: postgres
+postgres: ## Start PostgreSQL 17 in Docker on :5434 (data is lost when stopped)
+	docker run -d --rm --name $(PG_CONTAINER) -p $(PG_PORT):5432 \
+		-e POSTGRES_USER=orders -e POSTGRES_PASSWORD=orders -e POSTGRES_DB=orders \
+		postgres:17-alpine
+	@until docker exec $(PG_CONTAINER) pg_isready -U orders -q; do sleep 0.5; done
+	@echo "PostgreSQL ready: $(DATABASE_URL)"
+
+.PHONY: postgres-stop
+postgres-stop: ## Stop the PostgreSQL container
+	docker stop $(PG_CONTAINER)
+
+.PHONY: psql
+psql: ## Open a SQL shell on the orders database
+	docker exec -it $(PG_CONTAINER) psql -U orders -d orders
+
+.PHONY: migrate
+migrate: ## Apply orders database migrations (the separate production step)
+	DATABASE_URL='$(DATABASE_URL)' go run ./cmd/orders -migrate
+
 $(KEY_FILE):
 	openssl ecparam -name prime256v1 -genkey -noout -out $(KEY_FILE)
 
@@ -54,8 +79,9 @@ run-auth: $(KEY_FILE) ## Auth service on :8081
 	go run ./cmd/auth
 
 .PHONY: run-orders
-run-orders: ## Orders service on :8080
+run-orders: ## Orders service on :8080, stored in Postgres (runs migrations)
 	PORT=$(ORDERS_PORT) NATS_URL=$(NATS_URL) \
+	DATABASE_URL='$(DATABASE_URL)' DB_MIGRATE=true \
 	AUTH_ISSUER=$(AUTH_URL) AUTH_JWKS_URL=$(AUTH_URL)/.well-known/jwks.json \
 	go run ./cmd/orders
 
@@ -90,8 +116,12 @@ build: ## Build all binaries into bin/
 	go build -o bin/ ./cmd/...
 
 .PHONY: test
-test: ## Run all tests with the race detector
+test: ## Run all tests with the race detector (database tests skip)
 	go test -race ./...
+
+.PHONY: test-db
+test-db: ## Run all tests including PostgreSQL ones (needs `make postgres`)
+	TEST_DATABASE_URL='$(TEST_DATABASE_URL)' go test -race -count=1 ./...
 
 .PHONY: cover
 cover: ## Run tests and open the coverage report

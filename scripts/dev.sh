@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Runs the whole system locally: NATS (in Docker, if not already running),
-# the auth service, the orders service, the event consumer and the status
+# Runs the whole system locally: NATS and PostgreSQL (in Docker, if not
+# already running), the auth service, the orders service, the event consumer and the status
 # dashboard. Logs from
 # every process are prefixed with its name. Ctrl-C stops everything.
 set -euo pipefail
@@ -11,6 +11,8 @@ cd "$(dirname "$0")/.."
 : "${ORDERS_PORT:=8080}"
 : "${DASHBOARD_PORT:=8090}"
 : "${NATS_URL:=nats://localhost:4222}"
+: "${PG_PORT:=5434}"
+: "${DATABASE_URL:=postgres://orders:orders@localhost:${PG_PORT}/orders?sslmode=disable}"
 : "${KEY_FILE:=key.pem}"
 : "${ADMIN_EMAIL:=admin@example.com}"
 : "${ADMIN_PASSWORD:=admin-pass-123}"
@@ -24,6 +26,14 @@ if ! nc -z localhost 4222 2>/dev/null; then
 elif ! nc -z localhost 8222 2>/dev/null; then
 	echo "warning: NATS is running without monitoring on :8222, so the dashboard cannot show it."
 	echo "         Stop it and rerun, or start NATS with: make nats"
+fi
+
+if ! nc -z localhost "$PG_PORT" 2>/dev/null; then
+	echo "starting PostgreSQL in Docker on :$PG_PORT..."
+	docker run -d --rm --name distributed-postgres -p "$PG_PORT":5432 \
+		-e POSTGRES_USER=orders -e POSTGRES_PASSWORD=orders -e POSTGRES_DB=orders \
+		postgres:17-alpine >/dev/null
+	# orders retries the connection itself, so there is no need to wait here.
 fi
 
 if [[ ! -f "$KEY_FILE" ]]; then
@@ -59,6 +69,7 @@ run auth env PORT="$AUTH_PORT" AUTH_ISSUER="$AUTH_URL" \
 	./bin/auth
 
 run orders env PORT="$ORDERS_PORT" NATS_URL="$NATS_URL" \
+	DATABASE_URL="$DATABASE_URL" DB_MIGRATE=true \
 	AUTH_ISSUER="$AUTH_URL" AUTH_JWKS_URL="$AUTH_URL/.well-known/jwks.json" \
 	./bin/orders
 
